@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Centered white screen -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,34 h40 v40 h-40 z" />
+    <!-- Green fade over the white screen -->
+    <path android:pathData="M34,34 h40 v40 h-40 z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="34"
+                android:endX="54"
+                android:endY="74"
+                android:startColor="#00008040"
+                android:endColor="#FF008040" />
+        </aapt:attr>
+    </path>
+</vector>

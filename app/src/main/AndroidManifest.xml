@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.FadeBreak">
+
+        <!--
+            All UI runs in its own process so the always-resident accessibility service
+            process never pulls in Compose/Material/Skia.
+        -->
+        <activity
+            android:name=".ui.settings.SettingsActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:process=":ui">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ui.apps.AppListActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:process=":ui" />
+
+        <activity
+            android:name=".ui.image.AdjustBackgroundActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:process=":ui" />
+
+        <!-- Main process: single owner of the settings DataStore, exposed to :ui. -->
+        <provider
+            android:name=".data.SettingsProvider"
+            android:authorities="${applicationId}.settings"
+            android:exported="false" />
+
+        <!-- Main process: lets :ui trigger an overlay preview in the service. -->
+        <receiver
+            android:name=".track.ControlReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.wjf.fadebreak.action.PREVIEW" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".track.ActivityAccessibilityService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <receiver
+            android:name=".track.WakeupAlarmReceiver"
+            android:exported="false" />
+
+    </application>
+
+</manifest>

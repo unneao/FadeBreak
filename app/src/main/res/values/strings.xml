@@ -1,0 +1,40 @@
+<resources>
+    <string name="app_name">FadeBreak</string>
+    <string name="accessibility_service_label">FadeBreak 活动检测</string>
+    <string name="accessibility_service_description">用于判断你是否在使用手机(屏幕点亮时长与前台应用切换)。不读取屏幕内容,也不采集输入。</string>
+
+    <string name="settings_title">FadeBreak</string>
+    <string name="settings_preview">效果预览</string>
+    <string name="settings_section_params">参数设置</string>
+    <string name="settings_section_advanced">高级设置</string>
+    <string name="settings_section_status">权限与保活自检</string>
+    <string name="settings_startup_manager">设置启动与后台权限</string>
+    <string name="settings_whitelist">选择白名单应用</string>
+    <string name="param_timeout">休息间隔</string>
+    <string name="param_fade">渐进时长</string>
+    <string name="param_fade_out">渐隐时长</string>
+    <string name="param_opacity">最大不透明度</string>
+    <string name="param_min_break">护眼时长</string>
+    <string name="param_cooldown">重试间隔</string>
+    <string name="param_bg_image">使用背景图片</string>
+    <string name="settings_pick_media">选择图片或文件夹</string>
+    <string name="pick_media_title">选择背景来源</string>
+    <string name="pick_media_message">选择单张图片可手动调整显示区域;选择文件夹则轮流使用其中的图片(自动居中裁剪)。</string>
+    <string name="pick_image_option">选择图片</string>
+    <string name="pick_folder_option">选择文件夹</string>
+    <string name="bg_adjust_hint">拖动图片选择要显示的区域</string>
+    <string name="bg_adjust_done">完成</string>
+    <string name="desc_cooldown">打断后会重试，连续打断两次则开始新的计时循环</string>
+
+    <string name="diag_ok">✓ 正常运行</string>
+    <string name="diag_bad">✗ 未正常工作,点击查看原因</string>
+    <string name="diag_all_ok">一切正常,FadeBreak 正在后台运行。</string>
+    <string name="diag_accessibility_title">无障碍服务未开启</string>
+    <string name="diag_overlay_title">悬浮窗权限未授予</string>
+    <string name="diag_service_stopped">后台服务未运行</string>
+    <string name="diag_service_killed">后台服务被系统结束(%1$s)</string>
+    <string name="diag_action_accessibility">去开启</string>
+    <string name="diag_action_overlay">去授权</string>
+    <string name="diag_action_service">去设置</string>
+    <string name="diag_ignore">忽略</string>
+</resources>
