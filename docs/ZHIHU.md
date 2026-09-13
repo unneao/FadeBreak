@@ -29,6 +29,6 @@ FadeBreak 是一个 Android 护眼提醒应用,灵感来自 Windows 的 [FadeTop
 
 ## 获取
 
-GitHub 开源(MIT):`<你的仓库地址>`。下载 Release APK 侧载,Android 13+ 需先允许「受限设置」。
+GitHub 开源(MIT):https://github.com/unneao/FadeBreak 。下载 Release APK 侧载,Android 13+ 需先允许「受限设置」。
 
 > 20-20-20 为行为层面的缓解建议,非医疗诊断或治疗。
