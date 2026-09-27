@@ -20,6 +20,7 @@ class OverlayController(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
 
     private var view: OverlayView? = null
+    private var layoutParams: WindowManager.LayoutParams? = null
     private var fadeRunnable: Runnable? = null
     private var dismissing = false
 
@@ -66,6 +67,7 @@ class OverlayController(private val context: Context) {
         DebugLog.d("overlay added")
 
         view = overlay
+        layoutParams = params
         dismissing = false
         animate(overlay, 0f, maxAlpha.coerceIn(0f, 1f), fadeDurationMs)
     }
@@ -75,6 +77,9 @@ class OverlayController(private val context: Context) {
         if (dismissing) return
         DebugLog.d("overlay dismiss requested")
         dismissing = true
+        // While the overlay fades out it must stop eating touches, otherwise the
+        // user cannot interact with the app underneath for the whole fade-out.
+        setTouchable(false)
         animate(overlay, overlay.alphaFraction, 0f, fadeOutMs) { finishDismiss() }
     }
 
@@ -86,6 +91,7 @@ class OverlayController(private val context: Context) {
             releaseBackground(it)
         }
         view = null
+        layoutParams = null
         DebugLog.d("overlay removed")
         onDismissed?.invoke()
     }
@@ -99,6 +105,7 @@ class OverlayController(private val context: Context) {
             releaseBackground(it)
         }
         view = null
+        layoutParams = null
     }
 
     fun updateBackground(bitmap: Bitmap?) {
@@ -151,6 +158,27 @@ class OverlayController(private val context: Context) {
     private fun cancelFade() {
         fadeRunnable?.let { handler.removeCallbacks(it) }
         fadeRunnable = null
+    }
+
+    /**
+     * Toggle [WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE] on the live overlay window.
+     * While set, the window receives no touch, so gestures fall through to whatever is
+     * below it (the app the overlay was dismissed in front of).
+     */
+    private fun setTouchable(touchable: Boolean) {
+        val overlay = view ?: return
+        val params = layoutParams ?: return
+        val alreadyNotTouchable =
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0
+        val wantNotTouchable = !touchable
+        if (alreadyNotTouchable == wantNotTouchable) return
+        params.flags = if (wantNotTouchable) {
+            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        }
+        runCatching { windowManager.updateViewLayout(overlay, params) }
+            .onFailure { DebugLog.e("overlay updateViewLayout failed", it) }
     }
 
     private companion object {

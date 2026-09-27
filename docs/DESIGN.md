@@ -272,6 +272,7 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 - **自动关闭**:遮罩显示达到「护眼时长」后自动触发淡出(视为已护眼)。
 - **手动关闭**:覆盖层任意位置 `onTouchEvent`(ACTION_UP)→ 触发关闭。
 - 关闭时按「渐隐时长」播放淡出动画(默认 3s,可调),动画结束后结算并移除覆盖层。
+- **淡出期间立即放行触摸**:一旦开始渐隐,就给覆盖层窗口加上 `FLAG_NOT_TOUCHABLE`(`updateViewLayout`),此时新手势直接落到下方应用——用户点掉遮罩后可以立刻继续滑动操作,不必等 3s 动画放完。
 
 ### 8.4 主题配色
 - 以图标绿为锚点、低饱和度的一套 Material3 配色(`ui/theme/Theme.kt`)。
