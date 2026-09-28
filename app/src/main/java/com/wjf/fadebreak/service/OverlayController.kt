@@ -9,10 +9,27 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import com.wjf.fadebreak.core.DebugLog
 import com.wjf.fadebreak.ui.overlay.OverlayView
+import kotlin.math.abs
 
+/**
+ * Owns the full-screen break overlay.
+ *
+ * Two overlay windows are used so that letting touches through on dismissal never
+ * disturbs the visible one:
+ *  - the visible window draws the fading background and is created as
+ *    [WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE], so touches fall straight through it;
+ *  - a fully transparent window on top only catches the tap that dismisses the break.
+ *
+ * Removing the transparent catcher on dismissal is invisible and instantly hands
+ * gestures to the app underneath. Re-touching the *visible* window mid-fade (toggling
+ * FLAG_NOT_TOUCHABLE with `updateViewLayout`) makes it flash on some ROMs, hence the
+ * split.
+ */
 class OverlayController(private val context: Context) {
 
     private val windowManager =
@@ -20,7 +37,7 @@ class OverlayController(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
 
     private var view: OverlayView? = null
-    private var layoutParams: WindowManager.LayoutParams? = null
+    private var catcher: View? = null
     private var fadeRunnable: Runnable? = null
     private var dismissing = false
 
@@ -34,40 +51,39 @@ class OverlayController(private val context: Context) {
     fun show(fadeDurationMs: Long = 3000L, maxAlpha: Float = 0.85f) {
         if (view != null || !canDraw()) return
 
-        val overlay = OverlayView(context).apply {
-            onDismiss = { dismiss() }
+        val overlay = OverlayView(context)
+        val overlayAdded = runCatching {
+            windowManager.addView(
+                overlay,
+                overlayParams(extraFlags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+            )
+        }
+        if (overlayAdded.isFailure) {
+            DebugLog.e("overlay addView failed", overlayAdded.exceptionOrNull())
+            return
         }
 
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // Don't inset the window by system bars: cover status bar and navigation bar.
-                setFitInsetsTypes(0)
+        // The catcher sits above the (untouchable) overlay and owns the dismiss tap.
+        // If it cannot be added the overlay would be impossible to dismiss by tap, so
+        // roll the overlay back instead of leaving it stuck.
+        val catcher = object : View(context) {
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (event.action == MotionEvent.ACTION_UP) dismiss()
+                return true
             }
         }
-
-        val added = runCatching { windowManager.addView(overlay, params) }
-        if (added.isFailure) {
-            DebugLog.e("overlay addView failed", added.exceptionOrNull())
+        val catcherAdded = runCatching {
+            windowManager.addView(catcher, overlayParams(extraFlags = 0))
+        }
+        if (catcherAdded.isFailure) {
+            DebugLog.e("overlay catcher addView failed", catcherAdded.exceptionOrNull())
+            runCatching { windowManager.removeView(overlay) }
             return
         }
         DebugLog.d("overlay added")
 
+        this.catcher = catcher
         view = overlay
-        layoutParams = params
         dismissing = false
         animate(overlay, 0f, maxAlpha.coerceIn(0f, 1f), fadeDurationMs)
     }
@@ -77,9 +93,9 @@ class OverlayController(private val context: Context) {
         if (dismissing) return
         DebugLog.d("overlay dismiss requested")
         dismissing = true
-        // While the overlay fades out it must stop eating touches, otherwise the
-        // user cannot interact with the app underneath for the whole fade-out.
-        setTouchable(false)
+        // Drop the invisible catcher: gestures now reach the app below while the
+        // visible window keeps fading, untouched.
+        removeCatcher()
         animate(overlay, overlay.alphaFraction, 0f, fadeOutMs) { finishDismiss() }
     }
 
@@ -91,7 +107,7 @@ class OverlayController(private val context: Context) {
             releaseBackground(it)
         }
         view = null
-        layoutParams = null
+        removeCatcher()
         DebugLog.d("overlay removed")
         onDismissed?.invoke()
     }
@@ -105,7 +121,7 @@ class OverlayController(private val context: Context) {
             releaseBackground(it)
         }
         view = null
-        layoutParams = null
+        removeCatcher()
     }
 
     fun updateBackground(bitmap: Bitmap?) {
@@ -122,6 +138,34 @@ class OverlayController(private val context: Context) {
         if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
     }
 
+    private fun removeCatcher() {
+        catcher?.let { runCatching { windowManager.removeView(it) } }
+        catcher = null
+    }
+
+    private fun overlayParams(extraFlags: Int): WindowManager.LayoutParams =
+        WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or
+                extraFlags,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Don't inset the window by system bars: cover status bar and navigation bar.
+                setFitInsetsTypes(0)
+            }
+        }
+
     /** Drives [overlay].alphaFraction from [from] to [to]; [onEnd] runs on completion. */
     private fun animate(
         overlay: OverlayView,
@@ -137,13 +181,27 @@ class OverlayController(private val context: Context) {
             return
         }
         val start = SystemClock.uptimeMillis()
+        val span = to - from
+        // Progress is derived from the wall clock, so a main thread stalled by a window
+        // change or GC would make the next frame jump straight to the alpha for the
+        // elapsed time -- a visible flash. Cap how far one frame may move: the fade
+        // stays smooth and simply takes a little longer when frames run late.
+        val maxStep = abs(span) * (FRAME_MS.toFloat() / durationMs) * MAX_STEP_FACTOR
+        var current = from
         val runnable = object : Runnable {
             override fun run() {
                 val progress =
                     ((SystemClock.uptimeMillis() - start).toFloat() / durationMs)
                         .coerceIn(0f, 1f)
-                overlay.alphaFraction = from + (to - from) * progress
-                if (progress < 1f) {
+                val target = if (progress >= 1f) to else from + span * progress
+                val remaining = target - current
+                current = when {
+                    abs(remaining) <= maxStep -> target
+                    remaining > 0f -> current + maxStep
+                    else -> current - maxStep
+                }
+                overlay.alphaFraction = current
+                if (progress < 1f || current != to) {
                     handler.postDelayed(this, FRAME_MS)
                 } else {
                     fadeRunnable = null
@@ -160,28 +218,14 @@ class OverlayController(private val context: Context) {
         fadeRunnable = null
     }
 
-    /**
-     * Toggle [WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE] on the live overlay window.
-     * While set, the window receives no touch, so gestures fall through to whatever is
-     * below it (the app the overlay was dismissed in front of).
-     */
-    private fun setTouchable(touchable: Boolean) {
-        val overlay = view ?: return
-        val params = layoutParams ?: return
-        val alreadyNotTouchable =
-            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0
-        val wantNotTouchable = !touchable
-        if (alreadyNotTouchable == wantNotTouchable) return
-        params.flags = if (wantNotTouchable) {
-            params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        } else {
-            params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-        }
-        runCatching { windowManager.updateViewLayout(overlay, params) }
-            .onFailure { DebugLog.e("overlay updateViewLayout failed", it) }
-    }
-
     private companion object {
         const val FRAME_MS = 16L
+
+        /**
+         * How much faster than the nominal per-frame step a frame is allowed to catch up.
+         * 2x keeps the fade within ~1% opacity per frame at 3s/60fps, indistinguishable
+         * from a constant-rate fade while still absorbing a stalled frame.
+         */
+        const val MAX_STEP_FACTOR = 2f
     }
 }

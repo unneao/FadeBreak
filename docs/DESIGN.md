@@ -241,16 +241,24 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 ## 8. 覆盖层(Overlay)设计
 
 ### 8.1 WindowManager 参数
-- `type = TYPE_APPLICATION_OVERLAY`(`minSdk 26`,全版本可用,无需旧类型分支)
-- `flags = FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN | FLAG_LAYOUT_NO_LIMITS | FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS`
-  - `FLAG_NOT_FOCUSABLE` 仍可接收触摸,但不抢按键焦点(用点击关闭)
+遮罩由**两个**覆盖窗口组成,均为 `TYPE_APPLICATION_OVERLAY`(`minSdk 26`,全版本可用,无需旧类型分支):
+1. **可见层**:绘制纯色/背景图并按 alpha 淡入淡出。创建时就带 **`FLAG_NOT_TOUCHABLE`**,终身不接收触摸,也不做 `updateViewLayout`。
+2. **接 tap 层**:叠在可见层之上,全透明、可触摸,只负责在 `ACTION_UP` 时关闭遮罩。
+
+两窗口共用:
+- `flags = FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN | FLAG_LAYOUT_NO_LIMITS | FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS`(可见层再或上 `FLAG_NOT_TOUCHABLE`)
+  - `FLAG_NOT_FOCUSABLE` 不抢按键焦点(点击关闭由接 tap 层负责)
 - `format = PixelFormat.TRANSLUCENT`,`width/height = MATCH_PARENT`
 - `layoutInDisplayCutoutMode = LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`(适配挖孔屏)
 - **`setFitInsetsTypes(0)`(API 30+)**:不被系统栏 inset,遮罩**铺满状态栏与导航栏区域**(实测全屏覆盖,底部系统白条也不再露出)。
-- 渐隐:用 `Handler` 定时器每 16ms 递增 `alphaFraction`(`0→MaxOpacity`)并 `invalidate()`(等价于 FadeTop 的 `SetLayeredWindowAttributes` + `SetTimer`,实测 5s 内 304 帧、平均间隔 16ms)。
+
+> **为什么拆两层**:给**可见**窗口动态改 flags(如用 `updateViewLayout` 加 `FLAG_NOT_TOUCHABLE`)会触发窗口重排,实测在 Honor/MagicOS 上会让遮罩整屏闪一下——淡出首帧亮度直接跳掉约 20%。拆开后可见窗口全程参数不变,淡出顺滑;接 tap 层是全透明的,移除它不可见。
+
+- 渐隐:用 `Handler` 定时器每 16ms 推进 `alphaFraction`(`0→MaxOpacity`)并 `invalidate()`(等价于 FadeTop 的 `SetLayeredWindowAttributes` + `SetTimer`,实测 5s 内 304 帧、平均间隔 16ms)。
   - **`alphaFraction` 的 setter 必须调用 `invalidate()`**;否则只有时钟 ticker 每秒重绘一次,会像 PPT。
   - 不用 `ValueAnimator`:其帧回调在本场景会被系统节流(实测仅 ~1fps)。
   - 背景图先解码并预缩放/裁剪为屏幕尺寸,渐隐期间只做整屏贴图,避免逐帧缩放掉帧。
+  - 进度按墙上时钟计算,但**单帧的 alpha 变化量设有上限**(约 2 倍标准步长):主线程因窗口变更/GC 卡顿时,恢复后的第一帧只会慢一点,不会把停顿一次性补上而闪一下。
 
 ### 8.2 渲染内容
 ```
@@ -270,9 +278,9 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 
 ### 8.3 关闭方式
 - **自动关闭**:遮罩显示达到「护眼时长」后自动触发淡出(视为已护眼)。
-- **手动关闭**:覆盖层任意位置 `onTouchEvent`(ACTION_UP)→ 触发关闭。
+- **手动关闭**:接 tap 层任意位置 `onTouchEvent`(ACTION_UP)→ 触发关闭。
 - 关闭时按「渐隐时长」播放淡出动画(默认 3s,可调),动画结束后结算并移除覆盖层。
-- **淡出期间立即放行触摸**:一旦开始渐隐,就给覆盖层窗口加上 `FLAG_NOT_TOUCHABLE`(`updateViewLayout`),此时新手势直接落到下方应用——用户点掉遮罩后可以立刻继续滑动操作,不必等 3s 动画放完。
+- **淡出期间立即放行触摸**:一旦开始渐隐,就移除接 tap 层(不可见、瞬间完成),可见层本身不可触摸,新手势直接落到下方应用——用户点掉遮罩后可以立刻继续滑动操作,不必等 3s 动画放完。
 
 ### 8.4 主题配色
 - 以图标绿为锚点、低饱和度的一套 Material3 配色(`ui/theme/Theme.kt`)。

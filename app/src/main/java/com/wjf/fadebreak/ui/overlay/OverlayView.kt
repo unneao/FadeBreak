@@ -8,7 +8,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
-import android.view.MotionEvent
 import android.view.View
 
 @SuppressLint("ViewConstructor")
@@ -28,8 +27,6 @@ class OverlayView(context: Context) : View(context) {
             field = value
             invalidate()
         }
-
-    var onDismiss: (() -> Unit)? = null
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val srcRect = Rect()
@@ -53,13 +50,5 @@ class OverlayView(context: Context) : View(context) {
             bgPaint.alpha = a
             canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
         }
-    }
-
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (event.action == MotionEvent.ACTION_UP) {
-            onDismiss?.invoke()
-            return true
-        }
-        return true
     }
 }
