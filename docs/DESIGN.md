@@ -65,7 +65,7 @@
 |---|---|---|
 | 连续键鼠活动检测 | 连续使用 = 屏幕点亮时长(手机存在被动注视) | 替代 |
 | 忙时不打扰 | 不做:达标即触发(频繁操作时也提醒,避免漏触发) | 不做 |
-| 屏幕渐变淡出 | `TYPE_APPLICATION_OVERLAY` 覆盖层 + 定时器逐帧 alpha | 等价 |
+| 屏幕渐变淡出 | `TYPE_ACCESSIBILITY_OVERLAY` 覆盖层 + 定时器逐帧 alpha | 等价 |
 | 时钟 / Break Trail / Health Index | 已移除(遮罩只保留背景 + 关闭提示) | 不做 |
 | 任意键 / 晃鼠标关闭 | 点击遮罩关闭(带渐隐动画) | 替代 |
 | 判定“是否休息够” | 遮罩可见时长 >= 护眼时长(默认 20s) | 等价 |
@@ -132,14 +132,15 @@ app/src/main/java/.../fadebreak/
 
 | 权限 | 用途 | 授权方式 |
 |---|---|---|
-| 无障碍服务 | 承载监测循环(常驻;屏幕开关 + 前台应用切换判定) | 设置中手动开启(系统页) |
-| `SYSTEM_ALERT_WINDOW` | 绘制悬浮遮罩 | `ACTION_MANAGE_OVERLAY_PERMISSION` 跳转 |
+| 无障碍服务 | 承载监测循环(常驻;屏幕开关 + 前台应用切换判定);并以其 `TYPE_ACCESSIBILITY_OVERLAY` 窗口绘制悬浮遮罩 | 设置中手动开启(系统页) |
 | `PACKAGE_USAGE_STATS` | 读取前台应用(白名单) | `ACTION_USAGE_ACCESS_SETTINGS` 跳转 |
 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | 防 Doze 杀进程 | 跳转系统对话框 |
 
-> 不再使用前台服务/通知,因此无 `FOREGROUND_SERVICE` / `POST_NOTIFICATIONS` / `RECEIVE_BOOT_COMPLETED`。进程由无障碍服务绑定保活。
+> 遮罩**不需要** `SYSTEM_ALERT_WINDOW`:可信无障碍叠加层不绑定任何 manifest 权限(见 8.1),
+> manifest 里已不再声明它。不再使用前台服务/通知,因此也无 `FOREGROUND_SERVICE` /
+> `POST_NOTIFICATIONS` / `RECEIVE_BOOT_COMPLETED`。进程由无障碍服务绑定保活。
 
-**引导页顺序**:悬浮窗 → 无障碍 → 电池优化白名单 → MagicOS 自启动手动设置(带截图说明)。
+**引导页顺序**:无障碍 → 电池优化白名单 → MagicOS 自启动手动设置(带截图说明)。
 
 无障碍服务配置(`res/xml/accessibility_service_config.xml`)关键项:
 - `accessibilityEventTypes`: `typeWindowStateChanged`(仅用于承载常驻服务;计时不依赖任何事件)
@@ -173,9 +174,12 @@ app/src/main/java/.../fadebreak/
 ### 6.3 触发条件
 ```
 eligible = continuousMs >= 休息间隔
-blocked  = 无法绘制遮罩(未授权悬浮窗) || whitelist.contains(foregroundPackage)
+blocked  = whitelist.contains(foregroundPackage)
 trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 ```
+
+（早期版本还有一项"无法绘制遮罩(未授权悬浮窗)"；改用可信无障碍叠加层后不再需要——
+该窗口类型不依赖任何权限，见 8.1。）
 
 ### 6.4 结算与重试(对齐 FadeTop)
 - `taken = visibleMs >= 护眼时长`
@@ -361,8 +365,7 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 | 场景 | 处理 |
 |---|---|
 | 未开无障碍 | 监测不会运行(无障碍服务即宿主)→ 自检项提示开启 |
-| 未开悬浮窗 | 无法显示遮罩 → 引导页强制拦截 |
-| 未授权悬浮窗 | 无法绘制遮罩 → 视为 blocked,不进入 BREAK_ACTIVE(避免卡死) |
+| 遮罩 addView 罕见失败 | 记日志,并回调 `onDismissed` 让状态机退出 `BREAK_ACTIVE`,不卡死 |
 | 屏幕旋转 | 覆盖层重新 `updateViewLayout` 适配新尺寸/横竖屏 |
 | 息屏/锁屏期间到达触发点 | 不触发;解锁后按当前状态重新计 |
 | 遮罩显示时用户强行息屏 | 视为未休息,写库并按灭屏规则重置 |
@@ -380,7 +383,7 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 - 异步:Coroutines + Flow;`ActivityAccessibilityService` 内用 `Handler`/`Flow` 驱动
 - 构建:Gradle(Kotlin DSL)+ Version Catalog
 - `compileSdk/targetSdk = 36`,`minSdk = 26`(Android 8.0)
-  - `minSdk 26` 使 `TYPE_APPLICATION_OVERLAY`、通知渠道始终可用,无需旧版兼容分支
+  - `minSdk 26` 无需为更旧的窗口/通知 API 写兼容分支
   - `targetSdk 36` 独立于 `minSdk`,面向 Android 16 行为(与目标设备 MagicOS 10 对齐)
 - 版本差异集中在 `core/Compat` 工具类(如前台服务类型已不再需要)
 - 依赖尽量少,便于侧载和构建
@@ -430,7 +433,7 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 
 ## 17. 开源与发布(GitHub)
 
-- **不分发到应用商店**:以源码 + Release APK 形式发布,规避 Google Play 对无障碍/悬浮窗的政策审查。
+- **不分发到应用商店**:以源码 + Release APK 形式发布,规避 Google Play 对无障碍服务的政策审查。
 - **隐私即卖点**:不声明 `INTERNET` 权限,数据全部本地,README 首页显著说明。
 - **LICENSE**:MIT。
 - **签名**:自建 release keystore,`keystore.properties` 与 `.jks` 加入 `.gitignore`,绝不入库。
