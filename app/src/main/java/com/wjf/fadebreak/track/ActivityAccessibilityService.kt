@@ -74,8 +74,7 @@ class ActivityAccessibilityService : AccessibilityService() {
         DebugLog.d("service connected (pid=${android.os.Process.myPid()})")
 
         // Pass the service itself, not applicationContext: only the AccessibilityService
-        // context carries the window token that TYPE_ACCESSIBILITY_OVERLAY requires
-        // (AccessibilityService overrides getSystemService/createWindowContext for this).
+        // context carries the window token that TYPE_ACCESSIBILITY_OVERLAY requires.
         overlay = OverlayController(this)
         scheduler = WakeupScheduler { reason ->
             when (reason) {
@@ -243,11 +242,9 @@ class ActivityAccessibilityService : AccessibilityService() {
             // The foreground cache is meaningless across a screen-off gap.
             foregroundChecker.reset()
         }
-        // If we cannot draw the overlay, don't enter BREAK_ACTIVE (would get stuck).
-        val blocked = !overlay.canDraw() ||
-            (settings.whitelist.isNotEmpty() &&
-                foregroundChecker.hasPermission() &&
-                foregroundChecker.foregroundPackage() in settings.whitelist)
+        val blocked = settings.whitelist.isNotEmpty() &&
+            foregroundChecker.hasPermission() &&
+            foregroundChecker.foregroundPackage() in settings.whitelist
         machine.tick(now, screenOn, blocked, settings)
         DebugLog.d(
             "tick screenOn=$screenOn blocked=$blocked state=${machine.state} " +

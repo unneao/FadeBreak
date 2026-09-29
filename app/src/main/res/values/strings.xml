@@ -30,11 +30,9 @@
     <string name="diag_bad">✗ 未正常工作,点击查看原因</string>
     <string name="diag_all_ok">一切正常,FadeBreak 正在后台运行。</string>
     <string name="diag_accessibility_title">无障碍服务未开启</string>
-    <string name="diag_overlay_title">悬浮窗权限未授予</string>
     <string name="diag_service_stopped">后台服务未运行</string>
     <string name="diag_service_killed">后台服务被系统结束(%1$s)</string>
     <string name="diag_action_accessibility">去开启</string>
-    <string name="diag_action_overlay">去授权</string>
     <string name="diag_action_service">去设置</string>
     <string name="diag_ignore">忽略</string>
 </resources>

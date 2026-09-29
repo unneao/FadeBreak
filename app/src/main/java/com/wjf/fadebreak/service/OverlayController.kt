@@ -7,7 +7,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -16,31 +15,26 @@ import com.wjf.fadebreak.ui.overlay.OverlayView
 import kotlin.math.abs
 
 /**
- * Owns the full-screen break overlay: a single window that fades the background in and
- * out, and dismisses when tapped.
+ * Owns the full-screen break overlay: a single trusted window that fades the background in
+ * and out, and dismisses when tapped.
  *
- * Two window types are supported, and the difference matters:
+ * The window is a [WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY], added from the
+ * accessibility service's own context. The system treats that type as a *trusted* overlay,
+ * so the Android 12+ "untrusted touch" rule (`maximum_obscuring_opacity_for_touch`, 0.8)
+ * does not apply:
  *
- *  - [WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY] (preferred). The app *is* an
- *    accessibility service, and the system treats this type as a **trusted overlay**: the
- *    Android 12+ "untrusted touch" rule (`maximum_obscuring_opacity_for_touch`, 0.8) does
- *    not apply. So the dismissal can switch to touch-transparent the very instant it is
- *    tapped, at any opacity, with no visual change, and the configured opacity is honoured
- *    exactly (100% really is opaque). The catch is the window token: only the
- *    `AccessibilityService` context carries one (`AccessibilityService` overrides
- *    `getSystemService`/`createWindowContext` for that); an `applicationContext` window of
- *    this type fails with `BadTokenException: token null is not valid`. That is why the
- *    service passes itself in.
- *  - [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY] (fallback, used only if the
- *    platform refuses the trusted type). Here the platform clamps the window alpha to
- *    [trustCap] as soon as it becomes touch-transparent, so the hand-over has to wait for
- *    the fade to reach that opacity first ("[dismiss]"), and the drawn alpha is scaled up
- *    by `1/trustCap` to keep the brightness continuous across the switch.
+ *  - the configured opacity is honoured exactly (100% really is opaque), and the platform
+ *    does not rewrite the window alpha when touches start passing through;
+ *  - the dismissal switches the window to touch-transparent in the very frame it is tapped,
+ *    at any opacity, with no window-level alpha change and therefore nothing to flash. The
+ *    fade then runs on the drawn content alone.
+ *
+ * The *service* context is required rather than `applicationContext`: this window type needs
+ * a window token, and only `AccessibilityService` supplies one (it overrides
+ * `getSystemService` / `createWindowContext` for that). An application-context window of
+ * this type fails with `BadTokenException: token null is not valid`.
  */
-class OverlayController(
-    private val context: Context,
-    private val preferTrustedOverlay: Boolean = true
-) {
+class OverlayController(private val context: Context) {
 
     private val windowManager =
         context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -50,23 +44,14 @@ class OverlayController(
     private var layoutParams: WindowManager.LayoutParams? = null
     private var fadeRunnable: Runnable? = null
     private var dismissing = false
-    private var usingTrustedOverlay = false
 
     var fadeOutMs: Long = 800L
     var onDismissed: (() -> Unit)? = null
 
     val isShowing: Boolean get() = view != null
 
-    /**
-     * Whether an overlay can be shown at all. The trusted type needs no permission: the
-     * accessibility service being connected is the prerequisite, and the controller is
-     * created from `onServiceConnected`. [Settings.canDrawOverlays] only matters for the
-     * fallback path.
-     */
-    fun canDraw(): Boolean = preferTrustedOverlay || Settings.canDrawOverlays(context)
-
     fun show(fadeDurationMs: Long = 3000L, maxAlpha: Float = 0.85f) {
-        if (view != null || !canDraw()) return
+        if (view != null) return
 
         val overlay = OverlayView(context).apply {
             onTouch = { event ->
@@ -78,11 +63,7 @@ class OverlayController(
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
-            if (preferTrustedOverlay) {
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-            } else {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            },
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
@@ -100,21 +81,17 @@ class OverlayController(
             }
         }
 
-        var added = runCatching { windowManager.addView(overlay, params) }
-        usingTrustedOverlay = preferTrustedOverlay
-        if (added.isFailure && preferTrustedOverlay) {
-            // Some platform/ROM combination refused the trusted type; fall back to the
-            // permission-based overlay, which still works but hands touches over late.
-            DebugLog.w("trusted overlay refused, falling back: ${added.exceptionOrNull()}")
-            params.type = WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            added = runCatching { windowManager.addView(overlay, params) }
-            usingTrustedOverlay = false
-        }
+        val added = runCatching { windowManager.addView(overlay, params) }
         if (added.isFailure) {
             DebugLog.e("overlay addView failed", added.exceptionOrNull())
+            // Nothing was shown, so nothing will ever be tapped to dismiss it. Post the
+            // callback instead of invoking it inline: the trigger is still running inside
+            // BreakStateMachine.evaluate(), which only enters BREAK_ACTIVE afterwards, and
+            // a dismiss at this point would be ignored, leaving the machine waiting.
+            handler.post { onDismissed?.invoke() }
             return
         }
-        DebugLog.d("overlay added (trusted=$usingTrustedOverlay)")
+        DebugLog.d("overlay added")
 
         view = overlay
         layoutParams = params
@@ -128,30 +105,9 @@ class OverlayController(
         DebugLog.d("overlay dismiss requested")
         dismissing = true
         val shown = overlay.alphaFraction.coerceIn(0f, 1f)
-
-        if (usingTrustedOverlay) {
-            // A trusted window may pass touches through at any opacity, so hand over right
-            // away. The fade then runs on the drawn content alone: no window alpha change,
-            // nothing to flash, and gestures reach the app below immediately.
-            passThroughToApp(overlay)
-            animate(overlay, shown, 0f, fadeOutMs) { finishDismiss() }
-            return
-        }
-
-        val cap = trustCap
-        if (fadeOutMs <= 0L || shown <= cap) {
-            handOverToApp(overlay, shown, fadeOutMs)
-            return
-        }
-        // Keep the whole dismissal at one constant fade rate. The platform only lets
-        // touches through at <= trustCap opacity, so bring the current opacity down to
-        // that in the same proportion of time the rest of the fade takes:
-        //   blend / fadeOutMs == (shown - cap) / shown
-        // With 100% and a 3s fade that is 600ms, then the remaining 2.4s finishes 80%->0.
-        val blend = (fadeOutMs * (shown - cap) / shown).toLong().coerceIn(1L, fadeOutMs)
-        animate(overlay, shown, cap, blend) {
-            handOverToApp(overlay, cap, fadeOutMs - blend)
-        }
+        // A trusted window may pass touches through at any opacity, so hand over right away.
+        passThroughToApp(overlay)
+        animate(overlay, shown, 0f, fadeOutMs) { finishDismiss() }
     }
 
     /** Make the window touch-transparent so gestures reach the app below. */
@@ -160,24 +116,6 @@ class OverlayController(
         params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         runCatching { windowManager.updateViewLayout(overlay, params) }
             .onFailure { DebugLog.e("overlay updateViewLayout failed", it) }
-    }
-
-    /**
-     * Legacy hand-over for the untrusted window type: make the window touch-transparent
-     * (the platform clamps it to [trustCap]), then fade the (still visible) overlay out.
-     * The drawn alpha is scaled back up by [trustCap] because the window itself is now
-     * composited at that factor, keeping the brightness continuous.
-     */
-    private fun handOverToApp(overlay: OverlayView, composite: Float, remainingMs: Long) {
-        val params = layoutParams
-        if (params != null) {
-            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            params.alpha = trustCap
-            runCatching { windowManager.updateViewLayout(overlay, params) }
-                .onFailure { DebugLog.e("overlay updateViewLayout failed", it) }
-        }
-        val drawn = (composite / trustCap).coerceIn(0f, 1f)
-        animate(overlay, drawn, 0f, remainingMs) { finishDismiss() }
     }
 
     private fun finishDismiss() {
@@ -218,20 +156,6 @@ class OverlayController(
         overlay.background = null
         if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
     }
-
-    /**
-     * Highest opacity the platform lets an *untrusted* overlay that passes touches through
-     * have. Read from the system so a device that raised it (or a future default) is handled.
-     * Only the [WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY] fallback uses this.
-     */
-    private val trustCap: Float
-        get() = runCatching {
-            Settings.Secure.getFloat(
-                context.contentResolver,
-                "maximum_obscuring_opacity_for_touch",
-                DEFAULT_TRUST_CAP
-            )
-        }.getOrDefault(DEFAULT_TRUST_CAP).coerceIn(0.1f, 1f)
 
     /** Drives [overlay].alphaFraction from [from] to [to]; [onEnd] runs on completion. */
     private fun animate(
@@ -286,6 +210,5 @@ class OverlayController(
     private companion object {
         const val FRAME_MS = 16L
         const val MAX_STEP_FACTOR = 2f
-        const val DEFAULT_TRUST_CAP = 0.8f
     }
 }

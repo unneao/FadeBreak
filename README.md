@@ -27,7 +27,7 @@
 - 静默常驻无通知;保活自检按 ROM 给出指引
 - 纯本地:无 `INTERNET` 权限,无障碍不读取屏幕内容
 
-**安装**:在 [Releases](../../releases) 下载 APK 侧载,按应用内引导开启**无障碍服务**与电池优化白名单(遮罩走可信无障碍叠加层,悬浮窗权限已非必需,仅在个别 ROM 拒绝该类型时作为兜底)。Android 13+ 需先允许「受限设置」。
+**安装**:在 [Releases](../../releases) 下载 APK 侧载,按应用内引导开启**无障碍服务**与电池优化白名单(遮罩使用可信无障碍叠加层,**不需要悬浮窗权限**)。Android 13+ 需先允许「受限设置」。
 
 **构建**:JDK 17 + Android SDK 36,`./gradlew assembleRelease`。
 
@@ -61,7 +61,7 @@
 - Silent and resident, no notification; keep-alive self-check with ROM hints
 - Fully local: no `INTERNET` permission; accessibility never reads screen content
 
-**Install**: grab the APK from [Releases](../../releases) and sideload; follow the in-app guide (accessibility service, battery whitelist). The system-overlay permission is no longer required — the overlay uses the trusted accessibility-overlay window type, and the permission only backs a fallback for ROMs that refuse it. Android 13+ requires allowing "restricted settings".
+**Install**: grab the APK from [Releases](../../releases) and sideload; follow the in-app guide (accessibility service, battery whitelist). No system-overlay permission is needed - the overlay uses the trusted accessibility-overlay window type. Android 13+ requires allowing "restricted settings".
 
 **Build**: JDK 17 + Android SDK 36; `./gradlew assembleRelease`.
 

@@ -64,7 +64,6 @@ import kotlinx.coroutines.launch
 private const val SERVICE_RECHECK_MS = 1_200L
 
 data class UiStatus(
-    val overlay: Boolean = false,
     val accessibility: Boolean = false,
     val battery: Boolean = false
 )
@@ -153,7 +152,6 @@ class SettingsActivity : ComponentActivity() {
                             },
                             onPreview = ::previewOverlay,
                             onAccessibility = { openSystem(Settings.ACTION_ACCESSIBILITY_SETTINGS) },
-                            onOverlay = ::openOverlaySettings,
                             onBattery = ::openBatterySettings,
                             onWhitelist = ::openWhitelist,
                             onPickImage = { imagePicker.launch(arrayOf("image/*")) },
@@ -241,7 +239,6 @@ class SettingsActivity : ComponentActivity() {
     }
 
     private fun readStatus(): UiStatus = UiStatus(
-        overlay = Settings.canDrawOverlays(this),
         accessibility = isAccessibilityEnabled(),
         battery = (getSystemService(Context.POWER_SERVICE) as PowerManager)
             .isIgnoringBatteryOptimizations(packageName)
@@ -261,17 +258,6 @@ class SettingsActivity : ComponentActivity() {
 
     private fun openSystem(action: String) {
         runCatching { startActivity(Intent(action)) }
-    }
-
-    private fun openOverlaySettings() {
-        runCatching {
-            startActivity(
-                Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                )
-            )
-        }
     }
 
     private fun openBatterySettings() {
@@ -339,7 +325,6 @@ private fun SettingsScreen(
     onToggleEnabled: () -> Unit,
     onPreview: () -> Unit,
     onAccessibility: () -> Unit,
-    onOverlay: () -> Unit,
     onBattery: () -> Unit,
     onWhitelist: () -> Unit,
     onPickImage: () -> Unit,
@@ -455,7 +440,6 @@ private fun SettingsScreen(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(top = 12.dp)
         )
-        StatusRow("悬浮窗权限（可选）", status.overlay, "去授权", onOverlay)
         StatusRow("无障碍服务", status.accessibility, "去开启", onAccessibility)
         StatusRow("忽略电池优化", status.battery, "去设置", onBattery)
         ActionButton(R.string.settings_startup_manager, onStartupManager)
