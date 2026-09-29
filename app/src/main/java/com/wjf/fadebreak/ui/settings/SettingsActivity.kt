@@ -221,25 +221,22 @@ class SettingsActivity : ComponentActivity() {
                 onAction = { openSystem(Settings.ACTION_ACCESSIBILITY_SETTINGS) }
             )
         }
-        if (!status.value.overlay) {
-            list += DiagnosticIssue(
-                title = getString(R.string.diag_overlay_title),
-                actionLabel = getString(R.string.diag_action_overlay),
-                onAction = { openOverlaySettings() }
-            )
-        }
+        // Note: the overlay permission is no longer required. The overlay uses the trusted
+        // accessibility-overlay window type; the permission only backs a rare fallback, so
+        // it is not surfaced as a diagnostic issue.
+
         return list
     }
 
     private fun previewOverlay() {
-        when {
-            !isAccessibilityEnabled() -> openSystem(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            !Settings.canDrawOverlays(this) -> openOverlaySettings()
-            else -> runCatching {
-                sendBroadcast(
-                    Intent(ControlReceiver.ACTION_PREVIEW).setPackage(packageName)
-                )
-            }
+        if (!isAccessibilityEnabled()) {
+            openSystem(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            return
+        }
+        runCatching {
+            sendBroadcast(
+                Intent(ControlReceiver.ACTION_PREVIEW).setPackage(packageName)
+            )
         }
     }
 
@@ -376,7 +373,7 @@ private fun SettingsScreen(
         }
 
         StatusBanner(
-            healthy = status.accessibility && status.overlay,
+            healthy = status.accessibility,
             onClick = onShowDiagnostics
         )
 
@@ -458,7 +455,7 @@ private fun SettingsScreen(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(top = 12.dp)
         )
-        StatusRow("悬浮窗权限", status.overlay, "去授权", onOverlay)
+        StatusRow("悬浮窗权限（可选）", status.overlay, "去授权", onOverlay)
         StatusRow("无障碍服务", status.accessibility, "去开启", onAccessibility)
         StatusRow("忽略电池优化", status.battery, "去设置", onBattery)
         ActionButton(R.string.settings_startup_manager, onStartupManager)

@@ -241,16 +241,16 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 ## 8. 覆盖层(Overlay)设计
 
 ### 8.1 WindowManager 参数
-遮罩是一个 `TYPE_APPLICATION_OVERLAY` 窗口(`minSdk 26`,全版本可用,无需旧类型分支):
+遮罩是一个 **`TYPE_ACCESSIBILITY_OVERLAY`** 窗口(可信叠加层):
+
+- **为什么用这个类型**:Android 12+ 的「不受信任触摸」策略(`Settings.Secure.maximum_obscuring_opacity_for_touch`,默认 0.8)规定:让触摸穿透的*非可信*悬浮窗不透明度不能超过 0.8,否则会拦住下层触摸(防 tapjacking);实测 Honor/MagicOS 更直接——窗口一带 `FLAG_NOT_TOUCHABLE`,`alpha` 就被强制压到 0.8。`TYPE_ACCESSIBILITY_OVERLAY` 被系统当作**可信窗口**(`dumpsys input` 里是 `TRUSTED_OVERLAY`),**不受这条限制**:任意不透明度都能让触摸穿透,系统也不会改窗口 alpha。于是「显示 100% 真不透明」与「点关闭后立刻穿透」可以同时成立,切换瞬间零跳变。
+- **必须用无障碍服务自己的 context 加窗**:该类型要求绑定一个同类型的 window token(`dumpsys window` 里 `mToken=WindowToken{ type=2032 }`),token 由 `AccessibilityService` 重写的 `getSystemService` / `createWindowContext` 提供。用 `applicationContext`(或普通 Service)加窗会失败:`BadTokenException: token null is not valid`。
+- **兜底**:若平台仍拒绝可信类型(个别 ROM),自动回退到 `TYPE_APPLICATION_OVERLAY` + 悬浮窗权限,此时才受 0.8 限制(见 8.3)。
 - `flags = FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN | FLAG_LAYOUT_NO_LIMITS | FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS`
   - `FLAG_NOT_FOCUSABLE`:不抢按键焦点,但仍接收触摸(用点击关闭)
 - `format = PixelFormat.TRANSLUCENT`,`width/height = MATCH_PARENT`
 - `layoutInDisplayCutoutMode = LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`(适配挖孔屏)
 - **`setFitInsetsTypes(0)`(API 30+)**:不被系统栏 inset,遮罩**铺满状态栏与导航栏区域**(实测全屏覆盖,底部系统白条也不再露出)。
-
-> **关键限制:让触摸穿透的悬浮窗,不透明度上限是 0.8。** Android 12+ 的「不受信任触摸」策略(`Settings.Secure.maximum_obscuring_opacity_for_touch`,默认 0.8)不允许高于该值、又让触摸穿透的 overlay——否则会拦住下层的触摸(防 tapjacking)。实测 Honor/MagicOS 的做法是:窗口一旦带 `FLAG_NOT_TOUCHABLE`,系统就把它的 `alpha` 强制设成 0.8(显式写回 1.0 无效)。所以:
-> - **显示期间窗口保持可触摸** → 设置里的「最大不透明度 100%」真正生效;
-> - **一旦要让触摸穿透,就必须接受 ≤80%**。v0.1.1 的"闪一下"就是窗口从 1.0 被压到 0.8 的那 20% 跳变。
 
 - 渐隐:用 `Handler` 定时器每 16ms 推进 `alphaFraction`(`0→MaxOpacity`)并 `invalidate()`(等价于 FadeTop 的 `SetLayeredWindowAttributes` + `SetTimer`,实测 5s 内 304 帧、平均间隔 16ms)。
   - **`alphaFraction` 的 setter 必须调用 `invalidate()`**;否则只有时钟 ticker 每秒重绘一次,会像 PPT。
@@ -278,9 +278,9 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 - **自动关闭**:遮罩显示达到「护眼时长」后自动触发淡出(视为已护眼)。
 - **手动关闭**:接 tap 层任意位置 `onTouchEvent`(ACTION_UP)→ 触发关闭。
 - 关闭时按「渐隐时长」播放淡出动画(默认 3s,可调),动画结束后结算并移除覆盖层。
-- **淡出期间放行触摸**:点关闭后,窗口切换为 `FLAG_NOT_TOUCHABLE`(新手势直接落到下方应用)。为避开上面那条 0.8 限制带来的跳变:
-  - 若当前不透明度 ≤ `trustCap`(读 `maximum_obscuring_opacity_for_touch`,默认 0.8):直接把窗口 alpha 设为 `trustCap`,同时把绘制 alpha 乘 `1/trustCap` 补偿,**画面亮度连续**,触摸立刻放行;
-  - 若 > `trustCap`(如 100%):按**同一条线性淡出的节奏**先降到 80%,即交接时间 = `渐隐时长 × (当前值 − 0.8) / 当前值`(100% + 3s → 0.6s),再用剩余时间从 80% 淡到 0。整段淡出速率恒定(实测线性拟合 R²=0.999),切换时同样补偿绘制 alpha 保持亮度连续。触摸在交接完成后放行——100% 时约为渐隐时长的前 20%。
+- **淡出期间放行触摸**:
+  - **可信窗口(正常路径)**:点关闭的**同一帧**给窗口加 `FLAG_NOT_TOUCHABLE`,触摸立即落到下层应用;淡出只改绘制 alpha(窗口 alpha 保持 1.0),因此没有任何窗口级跳变。实测点关闭后 ~50ms 内手势已到达下层,淡出全程单帧亮度变化 ≤2/255,线性拟合 R²≈0.99。
+  - **兜底路径(`TYPE_APPLICATION_OVERLAY`)**:窗口一旦可穿透就被压到 `trustCap`(读 `maximum_obscuring_opacity_for_touch`,默认 0.8),因此必须先把不透明度降到该值才能交接:交接时间 = `渐隐时长 × (当前值 − 0.8) / 当前值`(100% + 3s → 0.6s);交接时把绘制 alpha 乘 `1/trustCap` 补偿以保持亮度连续。100% 时触摸需等渐隐时长的前 20%。
 
 ### 8.4 主题配色
 - 以图标绿为锚点、低饱和度的一套 Material3 配色(`ui/theme/Theme.kt`)。

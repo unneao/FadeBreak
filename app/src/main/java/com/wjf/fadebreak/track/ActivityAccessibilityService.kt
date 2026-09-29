@@ -73,7 +73,10 @@ class ActivityAccessibilityService : AccessibilityService() {
         DebugLog.init(applicationContext)
         DebugLog.d("service connected (pid=${android.os.Process.myPid()})")
 
-        overlay = OverlayController(applicationContext)
+        // Pass the service itself, not applicationContext: only the AccessibilityService
+        // context carries the window token that TYPE_ACCESSIBILITY_OVERLAY requires
+        // (AccessibilityService overrides getSystemService/createWindowContext for this).
+        overlay = OverlayController(this)
         scheduler = WakeupScheduler { reason ->
             when (reason) {
                 // Doze/vendor freezer held us back, but the device stayed awake: the
