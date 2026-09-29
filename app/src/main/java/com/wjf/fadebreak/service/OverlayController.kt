@@ -20,14 +20,14 @@ import kotlin.math.abs
  * fades the background in and out, and dismisses when tapped.
  *
  * While it is showing, the window is touchable, so the configured opacity is honoured
- * exactly (100% really is opaque). Tapping starts the dismissal: the fade first blends
- * down to [trustCap], then the window is switched to touch-transparent and faded to zero.
- * That hand-over exists because of Android 12+ "untrusted touch" protection: an overlay
- * that lets touches pass through may not be more than `maximumObscuringOpacityForTouch`
- * (0.8 by default) opaque, otherwise touches to the app underneath are blocked. Switching
- * the flag on a fully opaque window therefore makes it jump 1.0 -> 0.8, which reads as a
- * flash; blending the last 20% first keeps the fade smooth while still handing gestures
- * over within ~150ms of the tap.
+ * exactly (100% really is opaque). Tapping starts the dismissal: the fade brings the
+ * opacity down to [trustCap] first, then the window is switched to touch-transparent and
+ * faded to zero. That hand-over exists because of Android 12+ "untrusted touch"
+ * protection: an overlay that lets touches pass through may not be more than
+ * `maximumObscuringOpacityForTouch` (0.8 by default) opaque, otherwise touches to the app
+ * underneath are blocked. Switching the flag on a fully opaque window would make it jump
+ * 1.0 -> 0.8 (a flash), so the drop is done at the same rate as the rest of the fade,
+ * which for 100% means gestures are handed over after the first fifth of the fade.
  */
 class OverlayController(private val context: Context) {
 
@@ -98,12 +98,18 @@ class OverlayController(private val context: Context) {
         dismissing = true
         val shown = overlay.alphaFraction.coerceIn(0f, 1f)
         val cap = trustCap
-        if (shown <= cap) {
-            handOverToApp(overlay, shown)
-        } else {
-            // Blend the last stretch down to the trusted opacity first, so switching the
-            // flag does not make the overlay jump (see the class doc).
-            animate(overlay, shown, cap, HANDOVER_MS) { handOverToApp(overlay, cap) }
+        if (fadeOutMs <= 0L || shown <= cap) {
+            handOverToApp(overlay, shown, fadeOutMs)
+            return
+        }
+        // Keep the whole dismissal at one constant fade rate. The platform only lets
+        // touches through at <= trustCap opacity, so bring the current opacity down to
+        // that in the same proportion of time the rest of the fade takes:
+        //   blend / fadeOutMs == (shown - cap) / shown
+        // With 100% and a 3s fade that is 600ms, then the remaining 2.4s finishes 80%->0.
+        val blend = (fadeOutMs * (shown - cap) / shown).toLong().coerceIn(1L, fadeOutMs)
+        animate(overlay, shown, cap, blend) {
+            handOverToApp(overlay, cap, fadeOutMs - blend)
         }
     }
 
@@ -112,7 +118,7 @@ class OverlayController(private val context: Context) {
      * (still visible) overlay out. The drawn alpha is scaled back up by [trustCap] because
      * the window itself is now composited at that factor, keeping the brightness continuous.
      */
-    private fun handOverToApp(overlay: OverlayView, composite: Float) {
+    private fun handOverToApp(overlay: OverlayView, composite: Float, remainingMs: Long) {
         val params = layoutParams
         if (params != null) {
             params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -121,7 +127,7 @@ class OverlayController(private val context: Context) {
                 .onFailure { DebugLog.e("overlay updateViewLayout failed", it) }
         }
         val drawn = (composite / trustCap).coerceIn(0f, 1f)
-        animate(overlay, drawn, 0f, fadeOutMs) { finishDismiss() }
+        animate(overlay, drawn, 0f, remainingMs) { finishDismiss() }
     }
 
     private fun finishDismiss() {
@@ -230,8 +236,5 @@ class OverlayController(private val context: Context) {
         const val FRAME_MS = 16L
         const val MAX_STEP_FACTOR = 2f
         const val DEFAULT_TRUST_CAP = 0.8f
-
-        /** How long the 100% -> 80% blend takes before gestures are handed over. */
-        const val HANDOVER_MS = 150L
     }
 }
