@@ -241,18 +241,16 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 ## 8. 覆盖层(Overlay)设计
 
 ### 8.1 WindowManager 参数
-遮罩由**两个**覆盖窗口组成,均为 `TYPE_APPLICATION_OVERLAY`(`minSdk 26`,全版本可用,无需旧类型分支):
-1. **可见层**:绘制纯色/背景图并按 alpha 淡入淡出。创建时就带 **`FLAG_NOT_TOUCHABLE`**,终身不接收触摸,也不做 `updateViewLayout`。
-2. **接 tap 层**:叠在可见层之上,全透明、可触摸,只负责在 `ACTION_UP` 时关闭遮罩。
-
-两窗口共用:
-- `flags = FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN | FLAG_LAYOUT_NO_LIMITS | FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS`(可见层再或上 `FLAG_NOT_TOUCHABLE`)
-  - `FLAG_NOT_FOCUSABLE` 不抢按键焦点(点击关闭由接 tap 层负责)
+遮罩是一个 `TYPE_APPLICATION_OVERLAY` 窗口(`minSdk 26`,全版本可用,无需旧类型分支):
+- `flags = FLAG_NOT_FOCUSABLE | FLAG_LAYOUT_IN_SCREEN | FLAG_LAYOUT_NO_LIMITS | FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS`
+  - `FLAG_NOT_FOCUSABLE`:不抢按键焦点,但仍接收触摸(用点击关闭)
 - `format = PixelFormat.TRANSLUCENT`,`width/height = MATCH_PARENT`
 - `layoutInDisplayCutoutMode = LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS`(适配挖孔屏)
 - **`setFitInsetsTypes(0)`(API 30+)**:不被系统栏 inset,遮罩**铺满状态栏与导航栏区域**(实测全屏覆盖,底部系统白条也不再露出)。
 
-> **为什么拆两层**:给**可见**窗口动态改 flags(如用 `updateViewLayout` 加 `FLAG_NOT_TOUCHABLE`)会触发窗口重排,实测在 Honor/MagicOS 上会让遮罩整屏闪一下——淡出首帧亮度直接跳掉约 20%。拆开后可见窗口全程参数不变,淡出顺滑;接 tap 层是全透明的,移除它不可见。
+> **关键限制:让触摸穿透的悬浮窗,不透明度上限是 0.8。** Android 12+ 的「不受信任触摸」策略(`Settings.Secure.maximum_obscuring_opacity_for_touch`,默认 0.8)不允许高于该值、又让触摸穿透的 overlay——否则会拦住下层的触摸(防 tapjacking)。实测 Honor/MagicOS 的做法是:窗口一旦带 `FLAG_NOT_TOUCHABLE`,系统就把它的 `alpha` 强制设成 0.8(显式写回 1.0 无效)。所以:
+> - **显示期间窗口保持可触摸** → 设置里的「最大不透明度 100%」真正生效;
+> - **一旦要让触摸穿透,就必须接受 ≤80%**。v0.1.1 的"闪一下"就是窗口从 1.0 被压到 0.8 的那 20% 跳变。
 
 - 渐隐:用 `Handler` 定时器每 16ms 推进 `alphaFraction`(`0→MaxOpacity`)并 `invalidate()`(等价于 FadeTop 的 `SetLayeredWindowAttributes` + `SetTimer`,实测 5s 内 304 帧、平均间隔 16ms)。
   - **`alphaFraction` 的 setter 必须调用 `invalidate()`**;否则只有时钟 ticker 每秒重绘一次,会像 PPT。
@@ -280,7 +278,9 @@ trigger  = eligible && !blocked && screenOn && state ∈ {MONITORING, ELIGIBLE}
 - **自动关闭**:遮罩显示达到「护眼时长」后自动触发淡出(视为已护眼)。
 - **手动关闭**:接 tap 层任意位置 `onTouchEvent`(ACTION_UP)→ 触发关闭。
 - 关闭时按「渐隐时长」播放淡出动画(默认 3s,可调),动画结束后结算并移除覆盖层。
-- **淡出期间立即放行触摸**:一旦开始渐隐,就移除接 tap 层(不可见、瞬间完成),可见层本身不可触摸,新手势直接落到下方应用——用户点掉遮罩后可以立刻继续滑动操作,不必等 3s 动画放完。
+- **淡出期间放行触摸**:点关闭后,窗口切换为 `FLAG_NOT_TOUCHABLE`(新手势直接落到下方应用)。为避开上面那条 0.8 限制带来的跳变:
+  - 若当前不透明度 ≤ `trustCap`(读 `maximum_obscuring_opacity_for_touch`,默认 0.8):直接把窗口 alpha 设为 `trustCap`,同时把绘制 alpha 乘 `1/trustCap` 补偿,**画面亮度连续**,触摸立刻放行;
+  - 若 > `trustCap`(如 100%):先用 ~150ms 把画面平滑降到 80%,再切换(同样补偿到 1.0 以保持 0.8 的观感),然后继续淡到 0。**用户点掉遮罩后约 150ms 触摸即通**,且全程无单帧跳变。
 
 ### 8.4 主题配色
 - 以图标绿为锚点、低饱和度的一套 Material3 配色(`ui/theme/Theme.kt`)。

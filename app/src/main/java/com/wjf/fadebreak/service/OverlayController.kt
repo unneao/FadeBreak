@@ -10,25 +10,24 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import com.wjf.fadebreak.core.DebugLog
 import com.wjf.fadebreak.ui.overlay.OverlayView
 import kotlin.math.abs
 
 /**
- * Owns the full-screen break overlay.
+ * Owns the full-screen break overlay: a single [TYPE_APPLICATION_OVERLAY] window that
+ * fades the background in and out, and dismisses when tapped.
  *
- * Two overlay windows are used so that letting touches through on dismissal never
- * disturbs the visible one:
- *  - the visible window draws the fading background and is created as
- *    [WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE], so touches fall straight through it;
- *  - a fully transparent window on top only catches the tap that dismisses the break.
- *
- * Removing the transparent catcher on dismissal is invisible and instantly hands
- * gestures to the app underneath. Re-touching the *visible* window mid-fade (toggling
- * FLAG_NOT_TOUCHABLE with `updateViewLayout`) makes it flash on some ROMs, hence the
- * split.
+ * While it is showing, the window is touchable, so the configured opacity is honoured
+ * exactly (100% really is opaque). Tapping starts the dismissal: the fade first blends
+ * down to [trustCap], then the window is switched to touch-transparent and faded to zero.
+ * That hand-over exists because of Android 12+ "untrusted touch" protection: an overlay
+ * that lets touches pass through may not be more than `maximumObscuringOpacityForTouch`
+ * (0.8 by default) opaque, otherwise touches to the app underneath are blocked. Switching
+ * the flag on a fully opaque window therefore makes it jump 1.0 -> 0.8, which reads as a
+ * flash; blending the last 20% first keeps the fade smooth while still handing gestures
+ * over within ~150ms of the tap.
  */
 class OverlayController(private val context: Context) {
 
@@ -37,7 +36,7 @@ class OverlayController(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
 
     private var view: OverlayView? = null
-    private var catcher: View? = null
+    private var layoutParams: WindowManager.LayoutParams? = null
     private var fadeRunnable: Runnable? = null
     private var dismissing = false
 
@@ -51,39 +50,43 @@ class OverlayController(private val context: Context) {
     fun show(fadeDurationMs: Long = 3000L, maxAlpha: Float = 0.85f) {
         if (view != null || !canDraw()) return
 
-        val overlay = OverlayView(context)
-        val overlayAdded = runCatching {
-            windowManager.addView(
-                overlay,
-                overlayParams(extraFlags = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
-            )
-        }
-        if (overlayAdded.isFailure) {
-            DebugLog.e("overlay addView failed", overlayAdded.exceptionOrNull())
-            return
-        }
-
-        // The catcher sits above the (untouchable) overlay and owns the dismiss tap.
-        // If it cannot be added the overlay would be impossible to dismiss by tap, so
-        // roll the overlay back instead of leaving it stuck.
-        val catcher = object : View(context) {
-            override fun onTouchEvent(event: MotionEvent): Boolean {
+        val overlay = OverlayView(context).apply {
+            onTouch = { event ->
                 if (event.action == MotionEvent.ACTION_UP) dismiss()
-                return true
+                true
             }
         }
-        val catcherAdded = runCatching {
-            windowManager.addView(catcher, overlayParams(extraFlags = 0))
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Don't inset the window by system bars: cover status bar and navigation bar.
+                setFitInsetsTypes(0)
+            }
         }
-        if (catcherAdded.isFailure) {
-            DebugLog.e("overlay catcher addView failed", catcherAdded.exceptionOrNull())
-            runCatching { windowManager.removeView(overlay) }
+
+        val added = runCatching { windowManager.addView(overlay, params) }
+        if (added.isFailure) {
+            DebugLog.e("overlay addView failed", added.exceptionOrNull())
             return
         }
         DebugLog.d("overlay added")
 
-        this.catcher = catcher
         view = overlay
+        layoutParams = params
         dismissing = false
         animate(overlay, 0f, maxAlpha.coerceIn(0f, 1f), fadeDurationMs)
     }
@@ -93,10 +96,32 @@ class OverlayController(private val context: Context) {
         if (dismissing) return
         DebugLog.d("overlay dismiss requested")
         dismissing = true
-        // Drop the invisible catcher: gestures now reach the app below while the
-        // visible window keeps fading, untouched.
-        removeCatcher()
-        animate(overlay, overlay.alphaFraction, 0f, fadeOutMs) { finishDismiss() }
+        val shown = overlay.alphaFraction.coerceIn(0f, 1f)
+        val cap = trustCap
+        if (shown <= cap) {
+            handOverToApp(overlay, shown)
+        } else {
+            // Blend the last stretch down to the trusted opacity first, so switching the
+            // flag does not make the overlay jump (see the class doc).
+            animate(overlay, shown, cap, HANDOVER_MS) { handOverToApp(overlay, cap) }
+        }
+    }
+
+    /**
+     * Make the window touch-transparent so gestures reach the app below, then fade the
+     * (still visible) overlay out. The drawn alpha is scaled back up by [trustCap] because
+     * the window itself is now composited at that factor, keeping the brightness continuous.
+     */
+    private fun handOverToApp(overlay: OverlayView, composite: Float) {
+        val params = layoutParams
+        if (params != null) {
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            params.alpha = trustCap
+            runCatching { windowManager.updateViewLayout(overlay, params) }
+                .onFailure { DebugLog.e("overlay updateViewLayout failed", it) }
+        }
+        val drawn = (composite / trustCap).coerceIn(0f, 1f)
+        animate(overlay, drawn, 0f, fadeOutMs) { finishDismiss() }
     }
 
     private fun finishDismiss() {
@@ -107,7 +132,7 @@ class OverlayController(private val context: Context) {
             releaseBackground(it)
         }
         view = null
-        removeCatcher()
+        layoutParams = null
         DebugLog.d("overlay removed")
         onDismissed?.invoke()
     }
@@ -121,7 +146,7 @@ class OverlayController(private val context: Context) {
             releaseBackground(it)
         }
         view = null
-        removeCatcher()
+        layoutParams = null
     }
 
     fun updateBackground(bitmap: Bitmap?) {
@@ -138,33 +163,18 @@ class OverlayController(private val context: Context) {
         if (bitmap != null && !bitmap.isRecycled) bitmap.recycle()
     }
 
-    private fun removeCatcher() {
-        catcher?.let { runCatching { windowManager.removeView(it) } }
-        catcher = null
-    }
-
-    private fun overlayParams(extraFlags: Int): WindowManager.LayoutParams =
-        WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or
-                extraFlags,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // Don't inset the window by system bars: cover status bar and navigation bar.
-                setFitInsetsTypes(0)
-            }
-        }
+    /**
+     * Lowest opacity the platform lets an overlay that passes touches through have.
+     * Read from the system so a device that raised it (or a future default) is handled.
+     */
+    private val trustCap: Float
+        get() = runCatching {
+            Settings.Secure.getFloat(
+                context.contentResolver,
+                "maximum_obscuring_opacity_for_touch",
+                DEFAULT_TRUST_CAP
+            )
+        }.getOrDefault(DEFAULT_TRUST_CAP).coerceIn(0.1f, 1f)
 
     /** Drives [overlay].alphaFraction from [from] to [to]; [onEnd] runs on completion. */
     private fun animate(
@@ -182,10 +192,8 @@ class OverlayController(private val context: Context) {
         }
         val start = SystemClock.uptimeMillis()
         val span = to - from
-        // Progress is derived from the wall clock, so a main thread stalled by a window
-        // change or GC would make the next frame jump straight to the alpha for the
-        // elapsed time -- a visible flash. Cap how far one frame may move: the fade
-        // stays smooth and simply takes a little longer when frames run late.
+        // A stalled main thread (window relayout, GC) must not teleport the fade: cap how
+        // far one frame may move, so the fade just takes a little longer instead of jumping.
         val maxStep = abs(span) * (FRAME_MS.toFloat() / durationMs) * MAX_STEP_FACTOR
         var current = from
         val runnable = object : Runnable {
@@ -220,12 +228,10 @@ class OverlayController(private val context: Context) {
 
     private companion object {
         const val FRAME_MS = 16L
-
-        /**
-         * How much faster than the nominal per-frame step a frame is allowed to catch up.
-         * 2x keeps the fade within ~1% opacity per frame at 3s/60fps, indistinguishable
-         * from a constant-rate fade while still absorbing a stalled frame.
-         */
         const val MAX_STEP_FACTOR = 2f
+        const val DEFAULT_TRUST_CAP = 0.8f
+
+        /** How long the 100% -> 80% blend takes before gestures are handed over. */
+        const val HANDOVER_MS = 150L
     }
 }
